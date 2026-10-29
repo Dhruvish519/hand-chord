@@ -6,9 +6,11 @@ Play chords with your hand in the browser. OpenCV.js finds the hand, a **MobileN
 
 | Gesture | Sound |
 |---|---|
+| Fist (0) | Em (iii) |
 | 1 / 2 / 3 / 4 fingers | C, G, Am, F — the I–V–vi–IV progression |
 | 5 fingers | Dm (ii) |
-| Fist (0) | silence |
+| Hand out of the box, or not a counting gesture | silence |
+| *(all of the above can be changed in the panel)* | |
 | Hand height | volume |
 | Hand left ↔ right | filter brightness |
 | Hand tilt | vibrato |
@@ -22,37 +24,56 @@ Inspired by [Gesture Synth](https://gesture-synth-weld.vercel.app) by Eric Wei, 
 | | |
 |---|---|
 | **Dataset** | [HaGRID](https://github.com/hukenovs/hagrid) (HAnd Gesture Recognition Image Dataset), 31,833-image sample at 384p: [cj-mills/hagrid-sample-30k-384p](https://huggingface.co/datasets/cj-mills/hagrid-sample-30k-384p), CC-BY-SA 4.0 |
-| **Crops** | 44,098 hand crops (112×112) from 7,973 people |
+| **Crops** | 44,053 hand crops from 7,973 people (stored at 160×160 with 2× context so they can be rotated) |
 | **Classes** | 0 = fist, 1 = one, 2 = peace / two_up (+inverted), 3 = three / three2, 4 = four, 5 = palm / stop (+inverted), **none** = other gestures, relaxed hands and random background patches (faces, bodies, objects) |
-| **Split** | 80/20 **by person** (`user_id`): 36,165 train crops, 7,933 test crops, no person in both |
-| **Model** | MobileNetV3-Small, ImageNet-pretrained ([d-li14/mobilenetv3.pytorch](https://github.com/d-li14/mobilenetv3.pytorch)), last layer → 7 classes |
-| **Training** | 8 epochs, AdamW + one-cycle LR, class-weighted loss, augmentation (flip, ±20° rotation, zoom, brightness, white balance, blur) |
+| **Split** | 80/20 **by person** (`user_id`): 36,128 train crops, 7,925 test crops, no person in both |
+| **Model** | MobileNetV3-Small, ImageNet-pretrained ([d-li14/mobilenetv3.pytorch](https://github.com/d-li14/mobilenetv3.pytorch)), last layer → **9 outputs**: 7 class scores + sin, cos of the hand's tilt |
+| **Rotation training** | Each training image is rotated by a random angle (25% within ±15°, 50% within ±90°, 25% anywhere in ±180°), perspective-warped up to 8%, zoomed 1.2–1.75×, shifted, flipped, and colour/brightness/blur-augmented. The known rotation is the tilt label |
+| **Loss** | class-weighted cross-entropy (label smoothing 0.05) + squared error on (sin, cos) for counting hands |
+| **Training** | started from the upright-only model, 6 more epochs, AdamW + one-cycle LR |
 | **Runs in** | OpenCV.js `cv.dnn` (ONNX, 6.2 MB). OpenCV DNN and PyTorch agree on 300/300 test crops |
 
 **Results on the held-out 20% of people:**
 
 | Metric | Value |
 |---|---|
-| Test accuracy (7 classes) | **98.4%** |
-| Finger count correct, when the hand is a counting pose | 98.3% |
-| "none" images mistaken for a chord | 1.4% |
+| Test accuracy, upright hands (7 classes) | **98.0%** |
+| Finger count correct when the hand is a counting pose | 98.4% |
+| "none" images mistaken for a sound | 2.3% |
+| Average accuracy over 8 rotations (−135° … 180°) | **95.6%** (previous model: 60.5%) |
+| Average tilt-angle error | **5.7°** |
 
-| Class | Precision | Recall | F1 | Test crops |
+| Rotation | Previous model | New model | Tilt error |
+|---|---|---|---|
+| -135° | 44.1% | 93.7% | 5.5° |
+| -90° | 43.3% | 96.3% | 5.6° |
+| -45° | 82.4% | 97.1% | 5.4° |
+| 0° | 99.0% | 98.1% | 4.0° |
+| 45° | 84.1% | 96.9% | 6.1° |
+| 90° | 44.1% | 95.8% | 6.1° |
+| 135° | 43.8% | 93.9% | 6.9° |
+| 180° | 43.2% | 93.2% | 5.7° |
+
+| Class (upright test) | Precision | Recall | F1 | Test crops |
 |---|---|---|---|---|
-| 0 | 0.980 | 1.000 | 0.990 | 334 |
-| 1 | 0.930 | 0.964 | 0.947 | 387 |
-| 2 | 0.970 | 0.985 | 0.977 | 1,427 |
-| 3 | 0.970 | 0.966 | 0.968 | 726 |
-| 4 | 0.965 | 0.970 | 0.967 | 365 |
-| 5 | 0.989 | 0.993 | 0.991 | 1,092 |
-| none | 0.999 | 0.986 | 0.992 | 3,602 |
+| 0 | 0.971 | 0.997 | 0.984 | 334 |
+| 1 | 0.913 | 0.954 | 0.933 | 387 |
+| 2 | 0.973 | 0.977 | 0.975 | 1,427 |
+| 3 | 0.963 | 0.975 | 0.969 | 726 |
+| 4 | 0.955 | 0.992 | 0.973 | 365 |
+| 5 | 0.980 | 0.998 | 0.989 | 1,092 |
+| none | 0.998 | 0.977 | 0.988 | 3,594 |
 
-Test accuracy by epoch: 91.1 → 95.7 → 94.8 → 96.7 → 97.5 → 98.1 → 98.3 → 98.4%. The confusion matrix is in `python/train/results/confusion_matrix.png` (and on the website).
+Charts: `python/train/results/rotation_accuracy.png` and `confusion_matrix.png` (also on the website).
 
 ### How the website uses it
 1. OpenCV skin segmentation + largest contour gives a candidate box (and the hand position/tilt from moments).
 2. Two square crops go to the CNN: one around the contour, one covering the hand zone (backup when skin detection fails, e.g. skin-coloured walls).
-3. The more confident crop wins. Probabilities are averaged over frames and must pass 55% confidence and a 7-frame vote before the chord changes. "none" = silence, so faces and objects don't play.
+3. The more confident crop wins. Probabilities are averaged over frames and must pass 55% confidence and a 7-frame vote before the sound changes. "none" = silence, so faces and objects don't play.
+4. **Tilt** comes from the CNN's (sin, cos) output, smoothed over frames. Vibrato starts at 8° and is full at 35° either way. (In classical mode, tilt comes from image moments.)
+
+### Customising the sounds
+Open **Customise sounds for each finger** in the panel. Each count, including the fist (0), can play any chord of the current key, any single note from C3 to B5, or silence. The choice is saved in the browser. Default: fist = iii, 1–4 fingers = I–V–vi–IV, 5 = ii.
 
 The original classical method (convexity defects) is still selectable in the panel, which makes a good live comparison.
 
@@ -63,7 +84,7 @@ git clone --depth 1 https://github.com/d-li14/mobilenetv3.pytorch   # model code
 pip install torch onnx opencv-python-headless numpy matplotlib
 # download hagrid-sample-30k-384p.zip (1 GB) from the Hugging Face link above, then:
 python prepare_data.py --zip hagrid-sample-30k-384p.zip --out data      # ~1 min
-python train.py --data data --out model --epochs 8                     # ~25 min on a laptop CPU
+python train.py --data data --out model --epochs 6 --init <upright model .pt, optional> --compare <old .pt, optional>  # ~20 min on a laptop CPU
 python export_web.py --weights model/handchord.pt --data data --out ../../public/model/handchord.onnx
 ```
 
@@ -167,6 +188,8 @@ npm test          # synthetic hands with 0–5 fingers at three tilts, through t
 
 ## Known limitations
 
+- Rotated-hand accuracy is measured by rotating test photos in 2D. Turning the hand towards or away from the camera (3D) is only covered by the mild perspective augmentation.
+- Tilt is learned relative to how people naturally hold each gesture in HaGRID (roughly upright), so it's a relative angle, not an exact measurement.
 - The CNN knows the HaGRID poses. Unusual ways of showing a number (e.g. 3 = thumb + pinky + ring) may read as "none" or another count.
 - "1" is the weakest class (F1 0.947): it's sometimes confused with "none" gestures such as *like* (thumb up) or *mute* (finger on lips).
 - Accuracy is measured on still photos; live video adds motion blur. The frame averaging and vote help with that.

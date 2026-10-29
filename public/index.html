@@ -39,7 +39,7 @@
         <canvas id="view" width="640" height="480"></canvas>
         <div id="overlay" class="overlay">
           <h2>Play chords with your hand</h2>
-          <p>Hold one hand inside the box. Show 1–5 fingers to pick a chord, make a fist to stop.
+          <p>Hold one hand inside the box. Show 0–5 fingers (a fist counts as 0) to pick a sound, or take your hand out of the box to stop.
              Move up for volume, sideways for brightness, tilt for vibrato.</p>
           <button id="startBtn" class="btn primary" disabled>Loading OpenCV…</button>
           <p class="fine">Video never leaves your browser. Works best with a plain background and even light.</p>
@@ -76,8 +76,14 @@
       </div>
 
       <div class="chordmap">
-        <span class="label">Finger → chord</span>
+        <span class="label">Finger → sound</span>
         <ol id="chordMap"></ol>
+        <details class="assign">
+          <summary>Customise sounds for each finger</summary>
+          <div id="assignEditor" class="assign-grid"></div>
+          <button id="assignReset" class="btn ghost small-btn">Reset to default progression</button>
+          <p class="fine">Pick a chord from the current key, a single note, or silence. Saved in this browser.</p>
+        </details>
       </div>
 
       <div class="controls">
@@ -92,7 +98,7 @@
         </label>
         <label class="wide">Finger counting
           <select id="mode">
-            <option value="cnn">Trained CNN (MobileNetV3, 98.4% test accuracy)</option>
+            <option value="cnn">Trained CNN (MobileNetV3, works at any hand angle)</option>
             <option value="classic">Classical OpenCV (convexity defects)</option>
           </select>
         </label>
@@ -122,25 +128,28 @@
       <li><b>Largest contour</b><span><code>cv.findContours</code>; the biggest blob in the box is the hand.</span></li>
       <li><b>Moments</b><span>Centroid gives position; central moments give the tilt angle.</span></li>
       <li><b>Trained CNN</b><span>A square crop around the hand (112×112) goes through a MobileNetV3 network with <code>cv.dnn</code>. It outputs 0–5 fingers or "none" (faces, objects, other gestures).</span></li>
-      <li><b>Smoothing</b><span>Probabilities are averaged over frames and must pass 55% confidence plus a 7-frame vote before the chord changes.</span></li>
+      <li><b>Tilt from the CNN</b><span>The same network also outputs the hand’s rotation (as sin and cos), learned by rotating training images by known angles. Tilt drives vibrato.</span></li>
+      <li><b>Smoothing</b><span>Probabilities are averaged over frames and must pass 55% confidence plus a 7-frame vote before the sound changes.</span></li>
     </ol>
     <p class="note">The classical method (convexity defects: deep, narrow valleys in the convex hull are gaps between fingers) is still available in the panel for comparison.</p>
 
     <h2 class="sp">The model</h2>
     <div class="modelinfo">
       <div class="stats">
-        <div><b>98.4%</b><span>test accuracy</span></div>
-        <div><b>98.3%</b><span>correct finger count on counting hands</span></div>
-        <div><b>1.4%</b><span>non-hands mistaken for a chord</span></div>
-        <div><b>44,098</b><span>hand crops · 7,973 people</span></div>
+        <div><b>98.0%</b><span>test accuracy, upright hands</span></div>
+        <div><b>95.6%</b><span>average accuracy at any rotation (was 60.5%)</span></div>
+        <div><b>5.7°</b><span>average tilt error</span></div>
+        <div><b>44,053</b><span>hand crops · 7,973 people</span></div>
       </div>
       <div class="modeltext">
         <p><b>Dataset:</b> <a href="https://github.com/hukenovs/hagrid" target="_blank" rel="noopener">HaGRID</a> (HAnd Gesture Recognition Image Dataset), 31,833-image sample at 384p (<a href="https://huggingface.co/datasets/cj-mills/hagrid-sample-30k-384p" target="_blank" rel="noopener">cj-mills/hagrid-sample-30k-384p</a>, CC-BY-SA 4.0). Real photos from thousands of people in their own homes, lighting and backgrounds.</p>
         <p><b>Labels:</b> fist → 0, one → 1, peace / two-up → 2, three → 3, four → 4, palm / stop → 5. Other gestures, relaxed hands and random background patches → none.</p>
         <p><b>Split:</b> 80/20 <em>by person</em>: nobody in the 7,933 test crops appears in the 36,165 training crops, so the score reflects new users.</p>
-        <p><b>Training:</b> MobileNetV3-Small, ImageNet-pretrained, fine-tuned for 8 epochs with augmentation (flip, rotation, zoom, brightness, colour). Exported to ONNX and run in the browser by OpenCV.js.</p>
+        <p><b>Training:</b> MobileNetV3-Small, ImageNet-pretrained. Every training image is rotated by a random angle (up to a full turn), slightly perspective-warped, zoomed, flipped and colour-shifted. Because the rotation is known, the network also learns to output the hand’s tilt. Exported to ONNX and run in the browser by OpenCV.js.</p>
+        <p><b>Two outputs, one network:</b> 7 class scores (0–5 fingers, none) plus sin and cos of the tilt angle. Loss = cross-entropy + squared error on (sin, cos).</p>
       </div>
       <figure><img src="model/confusion_matrix.png" alt="Confusion matrix on the test set" loading="lazy" /><figcaption>Confusion matrix on the held-out 20% of people</figcaption></figure>
+      <figure class="wide"><img src="model/rotation_accuracy.png" alt="Accuracy versus hand rotation, new and previous model" loading="lazy" /><figcaption>Rotating the test hands: rotation training keeps accuracy above 93% at every angle</figcaption></figure>
     </div>
     <p class="credit">Inspired by <a href="https://gesture-synth-weld.vercel.app" target="_blank" rel="noopener">Gesture Synth</a> by Eric Wei. Built with <a href="https://docs.opencv.org/4.x/d5/d10/tutorial_js_root.html" target="_blank" rel="noopener">OpenCV.js</a> and <a href="https://tonejs.github.io" target="_blank" rel="noopener">Tone.js</a>.</p>
   </section>

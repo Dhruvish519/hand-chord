@@ -1,6 +1,6 @@
 // app.js — wires camera -> OpenCV tracker -> synth, and draws the UI.
 import { createTracker, DEFAULT_PARAMS } from './handTracker.js';
-import { ChordSynth, PRESETS, FINGER_TO_DEGREE, NOTE_NAMES } from './synth.js';
+import { ChordSynth, PRESETS, NOTE_NAMES, DEFAULT_ASSIGNMENTS, describeAssignment } from './synth.js';
 import { loadFingerModel, CLASSES, NONE } from './fingerModel.js';
 
 const $ = (id) => document.getElementById(id);
@@ -24,6 +24,9 @@ const cctx = cropCanvas.getContext('2d', { willReadFrequently: true });
 let cv, tracker, synth, model = null;
 let mode = 'cnn';          // 'cnn' = trained network, 'classic' = convexity defects
 let probsEma = null;
+let tiltEma = null;        // smoothed (sin, cos) of the CNN's tilt estimate
+const STORE_KEY = 'handchord.assignments.v1';
+let assignments = loadAssignments();
 let lastDet = null;
 let params = { ...DEFAULT_PARAMS };
 let stage = 'camera';
@@ -62,7 +65,12 @@ function setupControls() {
   NOTE_NAMES.forEach((n, i) => keySel.add(new Option(`${n} major`, i)));
 
   presetSel.onchange = () => synth && synth.setPreset(presetSel.value);
-  keySel.onchange = () => { synth && synth.setKey(+keySel.value); renderChordMap(); };
+  keySel.onchange = () => { synth && synth.setKey(+keySel.value); renderAssignEditor(); renderChordMap(); };
+  $('assignReset').onclick = () => {
+    assignments = structuredClone(DEFAULT_ASSIGNMENTS); saveAssignments();
+    if (synth) synth.setAssignments(assignments);
+    renderAssignEditor(); renderChordMap();
+  };
   $('side').onchange = (e) => { side = e.target.value; };
   $('mode').onchange = (e) => { mode = e.target.value; history = []; probsEma = null; };
 
@@ -90,15 +98,69 @@ function syncSliders() {
   }
 }
 
+// ---------- Finger -> note assignments ----------
+function loadAssignments() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (saved && [0, 1, 2, 3, 4, 5].every((f) => saved[f] && saved[f].type)) return saved;
+  } catch (e) { /* storage blocked or empty: use defaults */ }
+  return structuredClone(DEFAULT_ASSIGNMENTS);
+}
+
+function saveAssignments() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(assignments)); } catch (e) { /* not persisted */ }
+}
+
+const encode = (a) => (a.type === 'chord' ? `c${a.degree}` : a.type === 'note' ? `n${a.pc}-${a.octave}` : 's');
+function decode(v) {
+  if (v === 's') return { type: 'silence' };
+  if (v[0] === 'c') return { type: 'chord', degree: +v.slice(1) };
+  const [pc, oct] = v.slice(1).split('-').map(Number);
+  return { type: 'note', pc, octave: oct };
+}
+
+/** One dropdown per finger count: chords of the current key, single notes, or silence. */
+function renderAssignEditor() {
+  const root = +$('key').value;
+  const box = $('assignEditor');
+  box.innerHTML = '';
+  for (let f = 0; f <= 5; f++) {
+    const label = document.createElement('label');
+    label.innerHTML = `<span>${f === 0 ? '0 · fist' : `${f} finger${f > 1 ? 's' : ''}`}</span>`;
+    const sel = document.createElement('select');
+    const chords = document.createElement('optgroup'); chords.label = 'Chords in key';
+    for (let d = 0; d < 7; d++) {
+      const a = { type: 'chord', degree: d }, t = describeAssignment(a, root);
+      chords.appendChild(new Option(`${t.name} (${t.sub.replace('chord ', '')})`, encode(a)));
+    }
+    sel.appendChild(chords);
+    for (const oct of [3, 4, 5]) {
+      const g = document.createElement('optgroup'); g.label = `Single notes · octave ${oct}`;
+      NOTE_NAMES.forEach((n, pc) => g.appendChild(new Option(`${n}${oct}`, encode({ type: 'note', pc, octave: oct }))));
+      sel.appendChild(g);
+    }
+    sel.appendChild(new Option('Silence', 's'));
+    sel.value = encode(assignments[f]);
+    sel.onchange = () => {
+      assignments[f] = decode(sel.value);
+      saveAssignments();
+      if (synth) synth.setAssignments(assignments);
+      last = null; renderChordMap();
+    };
+    label.appendChild(sel);
+    box.appendChild(label);
+  }
+}
+
 function renderChordMap(active = -1) {
+  const root = +$('key').value;
   const ol = $('chordMap');
   ol.innerHTML = '';
-  for (let f = 1; f <= 5; f++) {
-    const deg = FINGER_TO_DEGREE[f];
-    const c = synth ? synth.chordName(deg) : { name: '', roman: '' };
+  for (let f = 0; f <= 5; f++) {
+    const t = describeAssignment(assignments[f], root);
     const li = document.createElement('li');
     if (f === active) li.className = 'on';
-    li.innerHTML = `<b>${f} ✋</b>${c.name}`;
+    li.innerHTML = `<b>${f === 0 ? '0 ✊' : `${f} ✋`}</b>${t.name}`;
     ol.appendChild(li);
   }
 }
@@ -113,6 +175,7 @@ async function start() {
     await synth.start();
     synth.setKey(+$('key').value);
     synth.setPreset($('preset').value);
+    synth.setAssignments(assignments);
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false,
     });
@@ -177,9 +240,9 @@ function classifyBox(box) {
   const k = hires.width / PROC_W;
   cctx.drawImage(hires, box.x * k, box.y * k, box.side * k, box.side * k, 0, 0, 112, 112);
   const mat = cv.matFromImageData(cctx.getImageData(0, 0, 112, 112));
-  const probs = model.classify(mat);
+  const res = model.classify(mat);
   mat.delete();
-  return probs;
+  return res;
 }
 
 /**
@@ -202,10 +265,11 @@ function detectWithCNN(r, roi) {
 
   let best = null;
   for (const box of candidates) {
-    const probs = classifyBox(box);
+    const res = classifyBox(box);
+    const probs = res.probs;
     const top = probs.indexOf(Math.max(...probs));
     const score = top === NONE ? 0 : probs[top];
-    if (!best || score > best.score) best = { box, probs, score };
+    if (!best || score > best.score) best = { box, probs, score, res };
     if (score >= 0.8) break; // confident enough, skip the backup crop
   }
 
@@ -213,7 +277,14 @@ function detectWithCNN(r, roi) {
   probsEma = probsEma ? probsEma.map((v, i) => 0.5 * v + 0.5 * best.probs[i]) : best.probs.slice();
   const top = probsEma.indexOf(Math.max(...probsEma));
   const fingers = top !== NONE && probsEma[top] >= MIN_CONF ? top : -1;
-  return { fingers, conf: probsEma[top], top, probs: probsEma, box: best.box };
+  // Tilt: smooth sin/cos (not the angle itself, so 179 deg and -179 deg average correctly).
+  let tilt = null;
+  if (best.res.tilt !== null) {
+    const s = best.res.sin, c = best.res.cos;
+    tiltEma = tiltEma ? [0.6 * tiltEma[0] + 0.4 * s, 0.6 * tiltEma[1] + 0.4 * c] : [s, c];
+    tilt = (Math.atan2(tiltEma[0], tiltEma[1]) * 180) / Math.PI;
+  }
+  return { fingers, conf: probsEma[top], top, probs: probsEma, box: best.box, tilt };
 }
 
 function renderProbs(det) {
@@ -238,10 +309,12 @@ function update(r, roi, det) {
     synth.stop();
     setReadout('–', '—', det && r.found ? 'not a counting hand' : 'no hand in box', -1);
   }
-  // Position/tilt come from the OpenCV contour (moments); without it, the CNN crop centre.
+  // Position comes from the OpenCV contour (moments); without it, the CNN crop centre.
+  // Tilt comes from the CNN (trained on rotated hands) when available, else from moments.
   let target = null;
   if (r.found) target = { x: r.cx / roi.w, y: r.cy / roi.h, angle: r.angle };
   else if (det && det.fingers >= 0) target = { x: (det.box.x + det.box.side / 2 - roi.x) / roi.w, y: (det.box.y + det.box.side / 2 - roi.y) / roi.h, angle: 0 };
+  if (target && det && det.tilt !== null && det.fingers >= 0) target.angle = det.tilt;
   if (!target) { smooth = null; return; }
 
   smooth = smooth
@@ -253,7 +326,7 @@ function update(r, roi, det) {
   const controls = {
     height: clamp01((0.85 - smooth.y) / 0.6),    // centroid near the top of the box = loud
     x: clamp01((smooth.x - 0.15) / 0.7),
-    tilt: clamp01(Math.abs(smooth.angle) / 40),
+    tilt: clamp01((Math.abs(smooth.angle) - 8) / 27), // 8 deg dead zone, full vibrato at 35 deg
   };
   synth.setControls(controls);
   $('mVol').style.width = `${controls.height * 100}%`;
@@ -263,11 +336,8 @@ function update(r, roi, det) {
 
   if (stableFingers >= 0) {
     synth.play(stableFingers);
-    if (stableFingers === 0) setReadout('0', '—', 'fist · silent', -1);
-    else {
-      const c = synth.chordName(FINGER_TO_DEGREE[stableFingers]);
-      setReadout(String(stableFingers), c.name, `chord ${c.roman}`, stableFingers);
-    }
+    const t = synth.labelFor(stableFingers);
+    setReadout(String(stableFingers), t.name, t.sub, stableFingers);
   }
 }
 
@@ -411,6 +481,7 @@ async function calibrate() {
 
 // ---------- Boot ----------
 setupControls();
+renderAssignEditor();
 renderChordMap();
 waitForOpenCV().then((res) => {
   cv = res.cv;

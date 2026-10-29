@@ -20,6 +20,7 @@ import torch.nn as nn
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "mobilenetv3.pytorch"))
 from mobilenetv3 import mobilenetv3_small  # noqa: E402
+from train import make_view, N_OUT  # noqa: E402
 
 SIZE = 112
 
@@ -43,7 +44,7 @@ def main():
     args = ap.parse_args()
 
     net = mobilenetv3_small()
-    net.classifier[-1] = nn.Linear(net.classifier[-1].in_features, 7)
+    net.classifier[-1] = nn.Linear(net.classifier[-1].in_features, N_OUT)  # 7 classes + sin, cos of tilt
     net.load_state_dict(torch.load(args.weights, map_location="cpu"))
     model = WebModel(net).eval()
 
@@ -59,12 +60,12 @@ def main():
     rows = [r for r in csv.DictReader(open(Path(args.data) / "labels.csv")) if r["split"] == "test"][:300]
     agree, correct = 0, 0
     for r in rows:
-        rgb = cv2.imread(str(Path(args.data) / "crops" / r["file"]))[:, :, ::-1].copy()
+        rgb = make_view(cv2.imread(str(Path(args.data) / "crops" / r["file"]))[:, :, ::-1].copy())
         blob = cv2.dnn.blobFromImage(rgb, 1.0, (SIZE, SIZE), (0, 0, 0), swapRB=False, crop=False)
         cvnet.setInput(blob)
-        p_cv = int(cvnet.forward().argmax())
+        p_cv = int(cvnet.forward()[0, :7].argmax())
         with torch.no_grad():
-            p_pt = int(model(torch.from_numpy(blob)).argmax())
+            p_pt = int(model(torch.from_numpy(blob))[0, :7].argmax())
         agree += p_cv == p_pt
         correct += p_cv == int(r["label"])
     print(f"OpenCV DNN agrees with PyTorch on {agree}/{len(rows)} test crops; accuracy {correct / len(rows) * 100:.1f}%")

@@ -1,13 +1,33 @@
 // synth.js — the music layer (Tone.js). Knows nothing about computer vision:
-// app.js tells it which chord to play and passes hand position/tilt as 0..1 values.
+// app.js tells it how many fingers are up and passes hand position/tilt as 0..1 values.
 /* global Tone */
 
 const MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11];
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const ROMAN = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°'];
 
-// Finger count -> scale degree (0-based). 1-2-3-4 fingers = the I–V–vi–IV progression.
-export const FINGER_TO_DEGREE = { 1: 0, 2: 4, 3: 5, 4: 3, 5: 1 };
+// What each finger count plays. Every entry is one of:
+//   { type: 'chord', degree: 0-6 }        a chord built on that step of the chosen key
+//   { type: 'note', pc: 0-11, octave }    one single note (pc 0 = C)
+//   { type: 'silence' }
+// Default: fist = iii, then 1-2-3-4 fingers = the I–V–vi–IV progression, 5 = ii.
+export const DEFAULT_ASSIGNMENTS = {
+  0: { type: 'chord', degree: 2 },
+  1: { type: 'chord', degree: 0 },
+  2: { type: 'chord', degree: 4 },
+  3: { type: 'chord', degree: 5 },
+  4: { type: 'chord', degree: 3 },
+  5: { type: 'chord', degree: 1 },
+};
+
+/** UI text for an assignment in a given key (root 0 = C): { name, sub } */
+export function describeAssignment(a, root = 0) {
+  if (!a || a.type === 'silence') return { name: '—', sub: 'silence' };
+  if (a.type === 'note') return { name: `${NOTE_NAMES[a.pc]}${a.octave}`, sub: 'note' };
+  const rootName = NOTE_NAMES[(root + MAJOR_SCALE[a.degree]) % 12];
+  const quality = [1, 2, 5].includes(a.degree) ? 'm' : a.degree === 6 ? 'dim' : '';
+  return { name: rootName + quality, sub: `chord ${ROMAN[a.degree]}` };
+}
 
 export const PRESETS = {
   pad: {
@@ -29,12 +49,13 @@ export const PRESETS = {
 
 export class ChordSynth {
   constructor() {
-    this.root = 0;          // C
+    this.root = 0;          // key: 0 = C major
     this.current = null;    // currently held MIDI notes
+    this.assign = structuredClone(DEFAULT_ASSIGNMENTS);
     this.analyser = new Tone.Analyser('waveform', 1024);
     this.volume = new Tone.Volume(-12);
     this.filter = new Tone.Filter(1200, 'lowpass', -24);
-    this.vibrato = new Tone.Vibrato(5, 0);
+    this.vibrato = new Tone.Vibrato(5.5, 0);
     this.reverb = new Tone.Freeverb({ roomSize: 0.8, dampening: 3000, wet: 0.3 });
     this.synth = new Tone.PolySynth(Tone.Synth);
     this.synth.maxPolyphony = 12;
@@ -52,6 +73,8 @@ export class ChordSynth {
 
   setKey(rootIndex) { this.root = rootIndex; this.current = null; this.synth.releaseAll(); }
 
+  setAssignments(map) { this.assign = structuredClone(map); this.current = null; this.synth.releaseAll(); }
+
   /** Triad on a scale degree, plus a bass note one octave below the chord root. */
   chordNotes(degree) {
     const base = 60 + this.root; // middle C + key offset
@@ -66,15 +89,27 @@ export class ChordSynth {
     return { name: rootName + quality, roman: ROMAN[degree] };
   }
 
-  /** Play the chord for a finger count (0 = silence). */
+  /** MIDI notes for an assignment (empty = silence). */
+  notesFor(a) {
+    if (!a || a.type === 'silence') return [];
+    if (a.type === 'note') return [12 * (a.octave + 1) + a.pc]; // C4 = MIDI 60
+    return this.chordNotes(a.degree);
+  }
+
+  /** Short text for the UI: { name, sub } */
+  label(a) { return describeAssignment(a, this.root); }
+
+  labelFor(fingers) { return this.label(this.assign[fingers]); }
+
+  /** Play whatever is assigned to this finger count. */
   play(fingers) {
-    if (fingers === 0) { this.stop(); return; }
-    const degree = FINGER_TO_DEGREE[fingers];
-    const notes = this.chordNotes(degree);
+    const notes = this.notesFor(this.assign[fingers]);
+    if (!notes.length) { this.stop(); return; }
     if (this.current && this.current.join() === notes.join()) return;
     const now = Tone.now();
-    if (this.current) this.synth.triggerRelease(this.current.map((n) => Tone.Frequency(n, 'midi').toFrequency()), now);
-    this.synth.triggerAttack(notes.map((n) => Tone.Frequency(n, 'midi').toFrequency()), now + 0.01);
+    const hz = (list) => list.map((n) => Tone.Frequency(n, 'midi').toFrequency());
+    if (this.current) this.synth.triggerRelease(hz(this.current), now);
+    this.synth.triggerAttack(hz(notes), now + 0.01);
     this.current = notes;
   }
 
@@ -93,10 +128,8 @@ export class ChordSynth {
   setControls({ height, x, tilt }) {
     this.volume.volume.rampTo(-36 + 30 * height, 0.08);
     this.filter.frequency.rampTo(200 * Math.pow(30, x), 0.08);
-    this.vibrato.depth.rampTo(Math.min(1, tilt) * 0.6, 0.1);
+    this.vibrato.depth.rampTo(Math.min(1, tilt) * 0.7, 0.1);
   }
 
   waveform() { return this.analyser.getValue(); }
 }
-
-export { NOTE_NAMES };

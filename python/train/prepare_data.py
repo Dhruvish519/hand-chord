@@ -4,7 +4,7 @@ prepare_data.py — turn the HaGRID 30k sample into hand crops for finger-count 
 Dataset: HaGRID (HAnd Gesture Recognition Image Dataset), 31,833-image sample at 384p
          https://huggingface.co/datasets/cj-mills/hagrid-sample-30k-384p  (CC-BY-SA 4.0)
 
-Output:  <out>/crops/<id>.jpg (112x112) and <out>/labels.csv with columns
+Output:  <out>/crops/<id>.jpg (160x160, hand box x2 context) and <out>/labels.csv with columns
          file, label, split, user_id, source_gesture
 
 Classes (what the synth plays):
@@ -39,7 +39,8 @@ GESTURE_TO_CLASS = {
     "palm": 5, "stop": 5, "stop_inverted": 5,
     "call": 6, "dislike": 6, "like": 6, "mute": 6, "ok": 6, "rock": 6, "no_gesture": 6,
 }
-SIZE = 112
+SIZE = 160
+CONTEXT = 2.0  # crop side = 2 x hand box, so training can rotate and zoom without cutting fingers off
 
 
 def user_split(user_id: str) -> str:
@@ -61,14 +62,14 @@ def square_crop(img, cx, cy, side):
 
 
 def hand_crops(img, box, n, rng):
-    """Square crops around a hand box with random zoom (1.2-1.7x) and shift, like a loose webcam crop."""
+    """Wide square crops centred on a hand. train.py later rotates, zooms and shifts them."""
     H, W = img.shape[:2]
     x, y, bw, bh = box[0] * W, box[1] * H, box[2] * W, box[3] * H
     out = []
     for _ in range(n):
-        side = max(bw, bh) * rng.uniform(1.2, 1.7)
-        cx = x + bw / 2 + rng.uniform(-0.12, 0.12) * side
-        cy = y + bh / 2 + rng.uniform(-0.12, 0.12) * side
+        side = max(bw, bh) * CONTEXT * rng.uniform(0.95, 1.05)
+        cx = x + bw / 2 + rng.uniform(-0.04, 0.04) * side
+        cy = y + bh / 2 + rng.uniform(-0.04, 0.04) * side
         out.append(square_crop(img, cx, cy, side))
     return out
 
@@ -78,7 +79,7 @@ def background_crop(img, boxes, rng, tries=20):
     H, W = img.shape[:2]
     hb = [(b[0] * W, b[1] * H, (b[0] + b[2]) * W, (b[1] + b[3]) * H) for b in boxes]
     for _ in range(tries):
-        side = rng.uniform(0.15, 0.45) * H
+        side = rng.uniform(0.2, 0.6) * H
         x0, y0 = rng.uniform(0, W - side), rng.uniform(0, H - side)
         x1, y1 = x0 + side, y0 + side
         if all(x1 < a or x0 > c or y1 < b or y0 > d for a, b, c, d in hb):
