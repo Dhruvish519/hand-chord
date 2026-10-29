@@ -1,0 +1,185 @@
+{
+ "dataset": "HaGRID sample 30k 384p (cj-mills/hagrid-sample-30k-384p), CC-BY-SA 4.0",
+ "split": "80/20 by person (user_id)",
+ "train_crops": 36165,
+ "test_crops": 7933,
+ "test_accuracy": 0.9835,
+ "finger_count_accuracy_on_counting_hands": 0.9827,
+ "none_detected_as_chord_rate": 0.0142,
+ "per_class": {
+  "0": {
+   "precision": 0.9795,
+   "recall": 1.0,
+   "f1": 0.9896,
+   "support": 334
+  },
+  "1": {
+   "precision": 0.9302,
+   "recall": 0.9638,
+   "f1": 0.9467,
+   "support": 387
+  },
+  "2": {
+   "precision": 0.9696,
+   "recall": 0.9846,
+   "f1": 0.9771,
+   "support": 1427
+  },
+  "3": {
+   "precision": 0.9696,
+   "recall": 0.9656,
+   "f1": 0.9676,
+   "support": 726
+  },
+  "4": {
+   "precision": 0.9646,
+   "recall": 0.9699,
+   "f1": 0.9672,
+   "support": 365
+  },
+  "5": {
+   "precision": 0.9891,
+   "recall": 0.9927,
+   "f1": 0.9909,
+   "support": 1092
+  },
+  "none": {
+   "precision": 0.9986,
+   "recall": 0.9858,
+   "f1": 0.9922,
+   "support": 3602
+  }
+ },
+ "confusion_matrix": [
+  [
+   334,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  [
+   0,
+   373,
+   13,
+   0,
+   0,
+   0,
+   1
+  ],
+  [
+   0,
+   9,
+   1405,
+   6,
+   1,
+   3,
+   3
+  ],
+  [
+   0,
+   0,
+   16,
+   701,
+   8,
+   1,
+   0
+  ],
+  [
+   0,
+   0,
+   0,
+   9,
+   354,
+   2,
+   0
+  ],
+  [
+   1,
+   0,
+   3,
+   2,
+   1,
+   1084,
+   1
+  ],
+  [
+   6,
+   19,
+   12,
+   5,
+   3,
+   6,
+   3551
+  ]
+ ],
+ "classes": [
+  "0",
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "none"
+ ],
+ "history": [
+  {
+   "epoch": 1,
+   "train_loss": 0.9329,
+   "train_acc": 0.7292,
+   "test_acc": 0.9109,
+   "train_seconds": 145
+  },
+  {
+   "epoch": 2,
+   "train_loss": 0.5609,
+   "train_acc": 0.9106,
+   "test_acc": 0.9565,
+   "train_seconds": 149
+  },
+  {
+   "epoch": 3,
+   "train_loss": 0.4885,
+   "train_acc": 0.9389,
+   "test_acc": 0.9476,
+   "train_seconds": 162
+  },
+  {
+   "epoch": 4,
+   "train_loss": 0.4581,
+   "train_acc": 0.9493,
+   "test_acc": 0.9674,
+   "train_seconds": 175
+  },
+  {
+   "epoch": 5,
+   "train_loss": 0.4207,
+   "train_acc": 0.9646,
+   "test_acc": 0.975,
+   "train_seconds": 162
+  },
+  {
+   "epoch": 6,
+   "train_loss": 0.3923,
+   "train_acc": 0.9749,
+   "test_acc": 0.9807,
+   "train_seconds": 197
+  },
+  {
+   "epoch": 7,
+   "train_loss": 0.3767,
+   "train_acc": 0.9807,
+   "test_acc": 0.9831,
+   "train_seconds": 162
+  },
+  {
+   "epoch": 8,
+   "train_loss": 0.3675,
+   "train_acc": 0.9847,
+   "test_acc": 0.9835,
+   "train_seconds": 152
+  }
+ ]
+}
