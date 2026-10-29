@@ -16,11 +16,12 @@
       <span class="logo" aria-hidden="true">✋</span>
       <div>
         <h1>HandChord</h1>
-        <p>Gesture synthesizer · classical computer vision with OpenCV.js</p>
+        <p>Gesture synthesizer · OpenCV.js + a CNN trained on 44k hand images</p>
       </div>
     </div>
     <div class="status">
       <span id="cvStatus" class="pill">OpenCV: loading…</span>
+      <span id="modelStatus" class="pill">CNN: loading…</span>
       <span id="fps" class="pill mono">— fps</span>
       <span id="procMs" class="pill mono">— ms</span>
     </div>
@@ -60,6 +61,14 @@
         </div>
       </div>
 
+      <div class="modelout">
+        <div class="modelout-head"><span class="label">CNN output</span><span id="confidence" class="mono small">—</span></div>
+        <div id="probs" class="probs">
+          <div><i></i><b>0</b></div><div><i></i><b>1</b></div><div><i></i><b>2</b></div><div><i></i><b>3</b></div>
+          <div><i></i><b>4</b></div><div><i></i><b>5</b></div><div class="none"><i></i><b>none</b></div>
+        </div>
+      </div>
+
       <div class="meters">
         <div class="meter"><span class="label">Volume · height</span><div class="bar"><i id="mVol"></i></div></div>
         <div class="meter"><span class="label">Brightness · x</span><div class="bar"><i id="mBright"></i></div></div>
@@ -80,6 +89,12 @@
         </label>
         <label>Box side
           <select id="side"><option value="right">Right</option><option value="left">Left</option></select>
+        </label>
+        <label class="wide">Finger counting
+          <select id="mode">
+            <option value="cnn">Trained CNN (MobileNetV3, 98.4% test accuracy)</option>
+            <option value="classic">Classical OpenCV (convexity defects)</option>
+          </select>
         </label>
       </div>
 
@@ -106,8 +121,27 @@
       <li><b>Morphology</b><span>Median blur, then opening removes specks and closing fills holes.</span></li>
       <li><b>Largest contour</b><span><code>cv.findContours</code>; the biggest blob in the box is the hand.</span></li>
       <li><b>Moments</b><span>Centroid gives position; central moments give the tilt angle.</span></li>
-      <li><b>Convexity defects</b><span>Deep, narrow valleys in the convex hull are gaps between fingers. Gaps + 1 = fingers.</span></li>
+      <li><b>Trained CNN</b><span>A square crop around the hand (112×112) goes through a MobileNetV3 network with <code>cv.dnn</code>. It outputs 0–5 fingers or "none" (faces, objects, other gestures).</span></li>
+      <li><b>Smoothing</b><span>Probabilities are averaged over frames and must pass 55% confidence plus a 7-frame vote before the chord changes.</span></li>
     </ol>
+    <p class="note">The classical method (convexity defects: deep, narrow valleys in the convex hull are gaps between fingers) is still available in the panel for comparison.</p>
+
+    <h2 class="sp">The model</h2>
+    <div class="modelinfo">
+      <div class="stats">
+        <div><b>98.4%</b><span>test accuracy</span></div>
+        <div><b>98.3%</b><span>correct finger count on counting hands</span></div>
+        <div><b>1.4%</b><span>non-hands mistaken for a chord</span></div>
+        <div><b>44,098</b><span>hand crops · 7,973 people</span></div>
+      </div>
+      <div class="modeltext">
+        <p><b>Dataset:</b> <a href="https://github.com/hukenovs/hagrid" target="_blank" rel="noopener">HaGRID</a> (HAnd Gesture Recognition Image Dataset), 31,833-image sample at 384p (<a href="https://huggingface.co/datasets/cj-mills/hagrid-sample-30k-384p" target="_blank" rel="noopener">cj-mills/hagrid-sample-30k-384p</a>, CC-BY-SA 4.0). Real photos from thousands of people in their own homes, lighting and backgrounds.</p>
+        <p><b>Labels:</b> fist → 0, one → 1, peace / two-up → 2, three → 3, four → 4, palm / stop → 5. Other gestures, relaxed hands and random background patches → none.</p>
+        <p><b>Split:</b> 80/20 <em>by person</em>: nobody in the 7,933 test crops appears in the 36,165 training crops, so the score reflects new users.</p>
+        <p><b>Training:</b> MobileNetV3-Small, ImageNet-pretrained, fine-tuned for 8 epochs with augmentation (flip, rotation, zoom, brightness, colour). Exported to ONNX and run in the browser by OpenCV.js.</p>
+      </div>
+      <figure><img src="model/confusion_matrix.png" alt="Confusion matrix on the test set" loading="lazy" /><figcaption>Confusion matrix on the held-out 20% of people</figcaption></figure>
+    </div>
     <p class="credit">Inspired by <a href="https://gesture-synth-weld.vercel.app" target="_blank" rel="noopener">Gesture Synth</a> by Eric Wei. Built with <a href="https://docs.opencv.org/4.x/d5/d10/tutorial_js_root.html" target="_blank" rel="noopener">OpenCV.js</a> and <a href="https://tonejs.github.io" target="_blank" rel="noopener">Tone.js</a>.</p>
   </section>
 

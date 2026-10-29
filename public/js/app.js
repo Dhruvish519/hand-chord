@@ -1,6 +1,7 @@
 // app.js — wires camera -> OpenCV tracker -> synth, and draws the UI.
 import { createTracker, DEFAULT_PARAMS } from './handTracker.js';
 import { ChordSynth, PRESETS, FINGER_TO_DEGREE, NOTE_NAMES } from './synth.js';
+import { loadFingerModel, CLASSES, NONE } from './fingerModel.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video'), view = $('view'), proc = $('proc'), maskCanvas = $('maskCanvas'), scope = $('scope');
@@ -12,8 +13,18 @@ const PROC_W = proc.width, PROC_H = proc.height;   // 320 x 240: processing reso
 const SCALE = view.width / PROC_W;                  // display is 2x the processing size
 const STABLE_FRAMES = 7;                            // finger count must win a vote over the last 7 frames
 const SMOOTH = 0.35;                                // exponential smoothing for position/tilt
+const MIN_CONF = 0.55;                              // CNN must be at least this sure before a chord plays
 
-let cv, tracker, synth;
+// A mirrored full-resolution copy of the frame, and a 112x112 canvas for the CNN input crop.
+const hires = document.createElement('canvas'); hires.width = 640; hires.height = 480;
+const hctx = hires.getContext('2d');
+const cropCanvas = document.createElement('canvas'); cropCanvas.width = cropCanvas.height = 112;
+const cctx = cropCanvas.getContext('2d', { willReadFrequently: true });
+
+let cv, tracker, synth, model = null;
+let mode = 'cnn';          // 'cnn' = trained network, 'classic' = convexity defects
+let probsEma = null;
+let lastDet = null;
 let params = { ...DEFAULT_PARAMS };
 let stage = 'camera';
 let side = 'right';
@@ -53,6 +64,7 @@ function setupControls() {
   presetSel.onchange = () => synth && synth.setPreset(presetSel.value);
   keySel.onchange = () => { synth && synth.setKey(+keySel.value); renderChordMap(); };
   $('side').onchange = (e) => { side = e.target.value; };
+  $('mode').onchange = (e) => { mode = e.target.value; history = []; probsEma = null; };
 
   for (const key of ['crMin', 'crMax', 'cbMin', 'cbMax', 'defectDepthRatio']) {
     const input = $(key);
@@ -136,8 +148,9 @@ function loop() {
     const src = cv.matFromImageData(pctx.getImageData(roi.x, roi.y, roi.w, roi.h));
     result = tracker.process(src, params);
     src.delete();
+    lastDet = mode === 'cnn' && model ? detectWithCNN(result, roi) : null;
     $('procMs').textContent = `${(performance.now() - t0).toFixed(1)} ms`;
-    update(result, roi);
+    update(result, roi, lastDet);
   }
   draw(result, roi);
   drawScope();
@@ -151,26 +164,86 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
+// ---------- Trained CNN ----------
+/** Square crop (processing-pixel coords) around a box, kept inside the frame. */
+function squareAround(cx, cy, side) {
+  side = Math.min(side, PROC_H);
+  const x = Math.max(0, Math.min(PROC_W - side, cx - side / 2));
+  const y = Math.max(0, Math.min(PROC_H - side, cy - side / 2));
+  return { x, y, side };
+}
+
+function classifyBox(box) {
+  const k = hires.width / PROC_W;
+  cctx.drawImage(hires, box.x * k, box.y * k, box.side * k, box.side * k, 0, 0, 112, 112);
+  const mat = cv.matFromImageData(cctx.getImageData(0, 0, 112, 112));
+  const probs = model.classify(mat);
+  mat.delete();
+  return probs;
+}
+
+/**
+ * Two candidate crops for the CNN:
+ *   A) around the skin blob that OpenCV found (tight, follows the hand), and
+ *   B) the whole hand zone (backup when skin detection misses the hand).
+ * The CNN decides the finger count, or "none" for faces, objects and other gestures.
+ */
+function detectWithCNN(r, roi) {
+  hctx.save(); hctx.translate(hires.width, 0); hctx.scale(-1, 1);
+  hctx.drawImage(video, 0, 0, hires.width, hires.height); hctx.restore();
+
+  const candidates = [];
+  if (r.found) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of r.contourPts) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+    candidates.push(squareAround(roi.x + (x0 + x1) / 2, roi.y + (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0) * 1.35));
+  }
+  candidates.push(squareAround(roi.x + roi.w / 2, roi.y + roi.h * 0.45, roi.w * 1.05));
+
+  let best = null;
+  for (const box of candidates) {
+    const probs = classifyBox(box);
+    const top = probs.indexOf(Math.max(...probs));
+    const score = top === NONE ? 0 : probs[top];
+    if (!best || score > best.score) best = { box, probs, score };
+    if (score >= 0.8) break; // confident enough, skip the backup crop
+  }
+
+  // Smooth the probabilities over time so one odd frame can't change the chord.
+  probsEma = probsEma ? probsEma.map((v, i) => 0.5 * v + 0.5 * best.probs[i]) : best.probs.slice();
+  const top = probsEma.indexOf(Math.max(...probsEma));
+  const fingers = top !== NONE && probsEma[top] >= MIN_CONF ? top : -1;
+  return { fingers, conf: probsEma[top], top, probs: probsEma, box: best.box };
+}
+
+function renderProbs(det) {
+  const bars = document.querySelectorAll('#probs i');
+  bars.forEach((b, i) => { b.style.setProperty('--p', det ? `${Math.round(det.probs[i] * 100)}%` : '0%'); b.parentElement.classList.toggle('hi', !!det && det.top === i); });
+  $('confidence').textContent = det ? `${CLASSES[det.top] === 'none' ? 'none' : CLASSES[det.top] + ' fingers'} · ${Math.round(det.conf * 100)}%` : '—';
+}
+
 /** Temporal smoothing + music control. */
-function update(r, roi) {
+function update(r, roi, det) {
+  if (det) renderProbs(det);
+  const frameFingers = det ? det.fingers : (r.found ? r.fingers : -1);
   // Majority vote over recent frames removes one-frame flicker in the finger count.
-  history.push(r.found ? r.fingers : -1);
+  history.push(frameFingers);
   if (history.length > STABLE_FRAMES) history.shift();
   const votes = {};
   for (const h of history) votes[h] = (votes[h] || 0) + 1;
   const [winner, count] = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
   if (count >= Math.ceil(STABLE_FRAMES / 2) + 1) stableFingers = +winner;
 
-  if (!r.found) {
-    smooth = null;
-    if (stableFingers === -1) {
-      synth.stop();
-      setReadout('–', '—', 'no hand in box', -1);
-    }
-    return;
+  if (stableFingers === -1) {
+    synth.stop();
+    setReadout('–', '—', det && r.found ? 'not a counting hand' : 'no hand in box', -1);
   }
+  // Position/tilt come from the OpenCV contour (moments); without it, the CNN crop centre.
+  let target = null;
+  if (r.found) target = { x: r.cx / roi.w, y: r.cy / roi.h, angle: r.angle };
+  else if (det && det.fingers >= 0) target = { x: (det.box.x + det.box.side / 2 - roi.x) / roi.w, y: (det.box.y + det.box.side / 2 - roi.y) / roi.h, angle: 0 };
+  if (!target) { smooth = null; return; }
 
-  const target = { x: r.cx / roi.w, y: r.cy / roi.h, angle: r.angle };
   smooth = smooth
     ? { x: smooth.x + SMOOTH * (target.x - smooth.x), y: smooth.y + SMOOTH * (target.y - smooth.y),
         angle: smooth.angle + SMOOTH * (target.angle - smooth.angle) }
@@ -252,6 +325,18 @@ function draw(r, roi) {
     vctx.lineWidth = 3;
     vctx.strokeRect(p.x * S, p.y * S, p.w * S, p.h * S);
     return;
+  }
+  if (lastDet && mode === 'cnn') {
+    const b = lastDet.box, ok = lastDet.fingers >= 0;
+    vctx.strokeStyle = ok ? '#5ee6c4' : 'rgba(255,107,107,0.8)';
+    vctx.lineWidth = 2; vctx.setLineDash([4, 4]);
+    vctx.strokeRect(b.x * S, b.y * S, b.side * S, b.side * S); vctx.setLineDash([]);
+    const label = `CNN: ${ok ? lastDet.fingers : 'none'} ${Math.round(lastDet.conf * 100)}%`;
+    vctx.font = '600 14px "JetBrains Mono", monospace';
+    const tw = vctx.measureText(label).width;
+    vctx.fillStyle = ok ? '#5ee6c4' : '#ff6b6b';
+    vctx.fillRect(b.x * S, b.y * S + b.side * S, tw + 12, 22);
+    vctx.fillStyle = '#0f0f12'; vctx.fillText(label, b.x * S + 6, b.y * S + b.side * S + 16);
   }
   if (!r || !r.found) return;
 
@@ -336,4 +421,11 @@ waitForOpenCV().then((res) => {
   btn.disabled = false;
   btn.textContent = 'Start camera & sound';
   btn.onclick = start;
+  loadFingerModel(cv)
+    .then((m) => { model = m; $('modelStatus').textContent = 'CNN model ready'; $('modelStatus').classList.add('ok'); })
+    .catch((err) => {
+      console.error(err);
+      mode = 'classic'; $('mode').value = 'classic';
+      $('modelStatus').textContent = 'CNN unavailable – using classical';
+    });
 });

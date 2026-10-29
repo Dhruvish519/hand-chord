@@ -1,0 +1,6 @@
+# training only
+torch>=2.2
+onnx
+opencv-python-headless
+numpy
+matplotlib
