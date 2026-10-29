@@ -1,6 +1,6 @@
 // app.js — wires camera -> OpenCV tracker -> synth, and draws the UI.
 import { createTracker, DEFAULT_PARAMS } from './handTracker.js';
-import { ChordSynth, PRESETS, NOTE_NAMES, DEFAULT_ASSIGNMENTS, describeAssignment } from './synth.js';
+import { ChordSynth, PRESETS, NOTE_NAMES, QUALITIES, QUALITY_ORDER, DEFAULT_ASSIGNMENTS, PROGRESSIONS, progressionAssignments, describeAssignment } from './synth.js';
 import { loadFingerModel, CLASSES, NONE } from './fingerModel.js';
 
 const $ = (id) => document.getElementById(id);
@@ -14,6 +14,7 @@ const SCALE = view.width / PROC_W;                  // display is 2x the process
 const STABLE_FRAMES = 7;                            // finger count must win a vote over the last 7 frames
 const SMOOTH = 0.35;                                // exponential smoothing for position/tilt
 const MIN_CONF = 0.55;                              // CNN must be at least this sure before a chord plays
+const FIST_CONF = 0.4;                              // a fist only needs 40% (it's the most distinct pose)
 
 // A mirrored full-resolution copy of the frame, and a 112x112 canvas for the CNN input crop.
 const hires = document.createElement('canvas'); hires.width = 640; hires.height = 480;
@@ -25,7 +26,9 @@ let cv, tracker, synth, model = null;
 let mode = 'cnn';          // 'cnn' = trained network, 'classic' = convexity defects
 let probsEma = null;
 let tiltEma = null;        // smoothed (sin, cos) of the CNN's tilt estimate
-const STORE_KEY = 'handchord.assignments.v1';
+const STORE_KEY = 'handchord.assignments.v2';
+let preset = 'pad';
+let editing = -1;          // finger count whose sound is being edited
 let assignments = loadAssignments();
 let lastDet = null;
 let params = { ...DEFAULT_PARAMS };
@@ -59,19 +62,35 @@ function roiRect() {
 
 // ---------- UI setup ----------
 function setupControls() {
-  const presetSel = $('preset');
-  for (const [k, v] of Object.entries(PRESETS)) presetSel.add(new Option(v.label, k));
-  const keySel = $('key');
-  NOTE_NAMES.forEach((n, i) => keySel.add(new Option(`${n} major`, i)));
-
-  presetSel.onchange = () => synth && synth.setPreset(presetSel.value);
-  keySel.onchange = () => { synth && synth.setKey(+keySel.value); renderAssignEditor(); renderChordMap(); };
-  $('assignReset').onclick = () => {
-    assignments = structuredClone(DEFAULT_ASSIGNMENTS); saveAssignments();
-    if (synth) synth.setAssignments(assignments);
-    renderAssignEditor(); renderChordMap();
+  // Sound preset: segmented buttons
+  const seg = $('presetSeg');
+  for (const [k, v] of Object.entries(PRESETS)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = v.label; b.dataset.v = k;
+    if (k === preset) b.classList.add('on');
+    b.onclick = () => {
+      preset = k; seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      if (synth) synth.setPreset(k);
+    };
+    seg.appendChild(b);
+  }
+  // Hand zone side
+  $('sideSeg').querySelectorAll('button').forEach((b) => {
+    b.onclick = () => {
+      side = b.dataset.v;
+      $('sideSeg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    };
+  });
+  // Quick fill: key + progression
+  NOTE_NAMES.forEach((n, i) => $('qfKey').add(new Option(n, i)));
+  for (const [k, v] of Object.entries(PROGRESSIONS)) $('qfProg').add(new Option(v.label, k));
+  $('qfApply').onclick = () => {
+    assignments = progressionAssignments(+$('qfKey').value, $('qfProg').value);
+    assignmentsChanged(`${$('qfProg').selectedOptions[0].text} in ${NOTE_NAMES[+$('qfKey').value]} loaded`);
   };
-  $('side').onchange = (e) => { side = e.target.value; };
+  // Editor
+  $('editorClose').onclick = () => openEditor(-1);
+  $('previewBtn').onclick = () => previewSound(assignments[editing]);
   $('mode').onchange = (e) => { mode = e.target.value; history = []; probsEma = null; };
 
   for (const key of ['crMin', 'crMax', 'cbMin', 'cbMax', 'defectDepthRatio']) {
@@ -98,7 +117,7 @@ function syncSliders() {
   }
 }
 
-// ---------- Finger -> note assignments ----------
+// ---------- Finger -> sound assignments ----------
 function loadAssignments() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -111,58 +130,117 @@ function saveAssignments() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(assignments)); } catch (e) { /* not persisted */ }
 }
 
-const encode = (a) => (a.type === 'chord' ? `c${a.degree}` : a.type === 'note' ? `n${a.pc}-${a.octave}` : 's');
-function decode(v) {
-  if (v === 's') return { type: 'silence' };
-  if (v[0] === 'c') return { type: 'chord', degree: +v.slice(1) };
-  const [pc, oct] = v.slice(1).split('-').map(Number);
-  return { type: 'note', pc, octave: oct };
+function assignmentsChanged(message) {
+  saveAssignments();
+  if (synth) synth.setAssignments(assignments);
+  last = null;
+  renderSoundCards(stableFingers);
+  if (editing >= 0) renderEditor();
+  if (message) toast(message);
 }
 
-/** One dropdown per finger count: chords of the current key, single notes, or silence. */
-function renderAssignEditor() {
-  const root = +$('key').value;
-  const box = $('assignEditor');
+const FINGER_NAMES = ['Fist', '1 finger', '2 fingers', '3 fingers', '4 fingers', '5 fingers'];
+
+/** Six tappable cards: finger count -> chord name. */
+function renderSoundCards(active = -1) {
+  const box = $('soundCards');
   box.innerHTML = '';
   for (let f = 0; f <= 5; f++) {
-    const label = document.createElement('label');
-    label.innerHTML = `<span>${f === 0 ? '0 · fist' : `${f} finger${f > 1 ? 's' : ''}`}</span>`;
-    const sel = document.createElement('select');
-    const chords = document.createElement('optgroup'); chords.label = 'Chords in key';
-    for (let d = 0; d < 7; d++) {
-      const a = { type: 'chord', degree: d }, t = describeAssignment(a, root);
-      chords.appendChild(new Option(`${t.name} (${t.sub.replace('chord ', '')})`, encode(a)));
-    }
-    sel.appendChild(chords);
-    for (const oct of [3, 4, 5]) {
-      const g = document.createElement('optgroup'); g.label = `Single notes · octave ${oct}`;
-      NOTE_NAMES.forEach((n, pc) => g.appendChild(new Option(`${n}${oct}`, encode({ type: 'note', pc, octave: oct }))));
-      sel.appendChild(g);
-    }
-    sel.appendChild(new Option('Silence', 's'));
-    sel.value = encode(assignments[f]);
-    sel.onchange = () => {
-      assignments[f] = decode(sel.value);
-      saveAssignments();
-      if (synth) synth.setAssignments(assignments);
-      last = null; renderChordMap();
-    };
-    label.appendChild(sel);
-    box.appendChild(label);
+    const t = describeAssignment(assignments[f]);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'scard' + (f === active ? ' on' : '') + (f === editing ? ' editing' : '');
+    b.title = `Change the sound for ${FINGER_NAMES[f].toLowerCase()}`;
+    const ic = Array.from({ length: 5 }, (_, i) => `<i class="${i < f ? 'on' : ''}"></i>`).join('');
+    b.innerHTML = `<span class="fl"><span class="fingers-ic">${ic}</span>${f === 0 ? 'fist' : f}</span>
+      <span class="nm">${t.name}</span><span class="sb">${t.sub}</span>`;
+    b.onclick = () => openEditor(editing === f ? -1 : f);
+    box.appendChild(b);
   }
 }
 
-function renderChordMap(active = -1) {
-  const root = +$('key').value;
-  const ol = $('chordMap');
-  ol.innerHTML = '';
-  for (let f = 0; f <= 5; f++) {
-    const t = describeAssignment(assignments[f], root);
-    const li = document.createElement('li');
-    if (f === active) li.className = 'on';
-    li.innerHTML = `<b>${f === 0 ? '0 ✊' : `${f} ✋`}</b>${t.name}`;
-    ol.appendChild(li);
+/** Highlight the playing / edited card without rebuilding (so taps are never lost). */
+function updateCards(active = -1) {
+  document.querySelectorAll('#soundCards .scard').forEach((el, f) => {
+    el.classList.toggle('on', f === active);
+    el.classList.toggle('editing', f === editing);
+  });
+}
+
+function openEditor(f) {
+  editing = f;
+  $('editor').hidden = f < 0;
+  updateCards(stableFingers);
+  if (f >= 0) renderEditor();
+}
+
+/** Root pills + chord-type pills (+ octave for single notes). */
+function renderEditor() {
+  const a = assignments[editing];
+  const t = describeAssignment(a);
+  $('editorTitle').textContent = FINGER_NAMES[editing];
+  $('editorName').textContent = t.name;
+  const root = a.type === 'chord' ? a.root : a.type === 'note' ? a.pc : null;
+
+  const pill = (label, on, onClick, extra = '') => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = `pill-btn ${on ? 'on' : ''} ${extra}`; b.textContent = label; b.onclick = onClick;
+    return b;
+  };
+  const roots = $('rootPills'); roots.innerHTML = '';
+  NOTE_NAMES.forEach((n, pc) => roots.appendChild(pill(n, root === pc, () => {
+    if (a.type === 'note') assignments[editing] = { ...a, pc };
+    else assignments[editing] = { type: 'chord', root: pc, quality: a.type === 'chord' ? a.quality : 'maj' };
+    assignmentsChanged(); previewSound(assignments[editing]);
+  })));
+
+  const types = $('typePills'); types.innerHTML = '';
+  for (const q of QUALITY_ORDER) {
+    const def = QUALITIES[q];
+    types.appendChild(pill(def.label, a.type === 'chord' && a.quality === q, () => {
+      assignments[editing] = { type: 'chord', root: root ?? 0, quality: q };
+      assignmentsChanged(); previewSound(assignments[editing]);
+    }));
   }
+  types.appendChild(pill('Single note', a.type === 'note', () => {
+    assignments[editing] = { type: 'note', pc: root ?? 0, octave: 4 };
+    assignmentsChanged(); previewSound(assignments[editing]);
+  }, 'muted'));
+  types.appendChild(pill('Silent', a.type === 'silence', () => {
+    assignments[editing] = { type: 'silence' };
+    assignmentsChanged();
+  }, 'muted'));
+
+  $('octaveField').hidden = a.type !== 'note';
+  const octs = $('octPills'); octs.innerHTML = '';
+  if (a.type === 'note') {
+    for (const o of [3, 4, 5]) octs.appendChild(pill(`Octave ${o}`, a.octave === o, () => {
+      assignments[editing] = { ...a, octave: o }; assignmentsChanged(); previewSound(assignments[editing]);
+    }));
+  }
+  $('previewBtn').disabled = a.type === 'silence';
+}
+
+async function previewSound(a) {
+  if (!a || a.type === 'silence') return;
+  if (!synth) { synth = new ChordSynth(); synth.setPreset(preset); synth.setAssignments(assignments); }
+  await synth.start();
+  synth.preview(a);
+}
+
+let toastTimer = null;
+function toast(msg) {
+  let el = document.querySelector('.toast');
+  if (!el) { el = document.createElement('div'); el.className = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+function setStatus(id, text, state) {
+  const el = $(id);
+  el.innerHTML = `<i class="dot"></i>${text}`;
+  el.classList.toggle('ok', state === 'ok');
+  el.classList.toggle('warn', state === 'warn');
 }
 
 // ---------- Start ----------
@@ -171,10 +249,9 @@ async function start() {
   btn.disabled = true;
   btn.textContent = 'Starting camera…';
   try {
-    synth = new ChordSynth();
+    synth = synth || new ChordSynth();
     await synth.start();
-    synth.setKey(+$('key').value);
-    synth.setPreset($('preset').value);
+    synth.setPreset(preset);
     synth.setAssignments(assignments);
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false,
@@ -189,7 +266,7 @@ async function start() {
   }
   $('overlay').hidden = true;
   $('calibBtn').disabled = false;
-  renderChordMap();
+  renderSoundCards();
   running = true;
   requestAnimationFrame(loop);
 }
@@ -212,7 +289,7 @@ function loop() {
     result = tracker.process(src, params);
     src.delete();
     lastDet = mode === 'cnn' && model ? detectWithCNN(result, roi) : null;
-    $('procMs').textContent = `${(performance.now() - t0).toFixed(1)} ms`;
+    $('procMs').textContent = `${(performance.now() - t0).toFixed(1)} ms per frame`;
     update(result, roi, lastDet);
   }
   draw(result, roi);
@@ -256,10 +333,17 @@ function detectWithCNN(r, roi) {
   hctx.drawImage(video, 0, 0, hires.width, hires.height); hctx.restore();
 
   const candidates = [];
+  let solidity = 0;
   if (r.found) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const q of r.contourPts) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
-    candidates.push(squareAround(roi.x + (x0 + x1) / 2, roi.y + (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0) * 1.35));
+    const w = x1 - x0, h = y1 - y0;
+    // The skin outline often includes the wrist and forearm, which makes a fist look tiny.
+    // So first crop only the top part of the outline (about one hand-width tall), where the hand is.
+    const handH = Math.min(h, w * 1.25);
+    candidates.push(squareAround(roi.x + (x0 + x1) / 2, roi.y + y0 + handH / 2, Math.max(w, handH) * 1.45));
+    if (h > handH * 1.15) candidates.push(squareAround(roi.x + (x0 + x1) / 2, roi.y + (y0 + y1) / 2, Math.max(w, h) * 1.35));
+    solidity = polyArea(r.contourPts) / Math.max(polyArea(r.hullPts), 1); // 1 = perfectly convex (fist-like)
   }
   candidates.push(squareAround(roi.x + roi.w / 2, roi.y + roi.h * 0.45, roi.w * 1.05));
 
@@ -276,7 +360,10 @@ function detectWithCNN(r, roi) {
   // Smooth the probabilities over time so one odd frame can't change the chord.
   probsEma = probsEma ? probsEma.map((v, i) => 0.5 * v + 0.5 * best.probs[i]) : best.probs.slice();
   const top = probsEma.indexOf(Math.max(...probsEma));
-  const fingers = top !== NONE && probsEma[top] >= MIN_CONF ? top : -1;
+  let fingers = top !== NONE && probsEma[top] >= (top === 0 ? FIST_CONF : MIN_CONF) ? top : -1;
+  // Fist safety net: a fist has no finger gaps, so its outline is compact (high solidity).
+  // If the CNN is unsure between "none" and "fist" and the shape is compact, call it a fist.
+  if (fingers === -1 && probsEma[0] >= 0.22 && probsEma[0] >= probsEma[1] && solidity >= 0.86) fingers = 0;
   // Tilt: smooth sin/cos (not the angle itself, so 179 deg and -179 deg average correctly).
   let tilt = null;
   if (best.res.tilt !== null) {
@@ -285,6 +372,12 @@ function detectWithCNN(r, roi) {
     tilt = (Math.atan2(tiltEma[0], tiltEma[1]) * 180) / Math.PI;
   }
   return { fingers, conf: probsEma[top], top, probs: probsEma, box: best.box, tilt };
+}
+
+function polyArea(pts) {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y);
+  return Math.abs(a / 2);
 }
 
 function renderProbs(det) {
@@ -307,7 +400,7 @@ function update(r, roi, det) {
 
   if (stableFingers === -1) {
     synth.stop();
-    setReadout('–', '—', det && r.found ? 'not a counting hand' : 'no hand in box', -1);
+    setReadout('–', '—', det && r.found ? 'not a counting gesture' : 'show your hand in the box', -1);
   }
   // Position comes from the OpenCV contour (moments); without it, the CNN crop centre.
   // Tilt comes from the CNN (trained on rotated hands) when available, else from moments.
@@ -346,9 +439,11 @@ function setReadout(fingers, chord, roman, active) {
   if (last === key) return;
   last = key;
   $('fingerCount').textContent = fingers;
-  $('chordName').textContent = chord;
+  const cn = $('chordName');
+  if (cn.textContent !== chord && chord !== '—') { cn.classList.remove('flash'); void cn.offsetWidth; cn.classList.add('flash'); }
+  cn.textContent = chord;
   $('chordRoman').textContent = roman;
-  renderChordMap(active);
+  updateCards(active);
 }
 
 // ---------- Drawing ----------
@@ -481,22 +576,20 @@ async function calibrate() {
 
 // ---------- Boot ----------
 setupControls();
-renderAssignEditor();
-renderChordMap();
+renderSoundCards();
 waitForOpenCV().then((res) => {
   cv = res.cv;
   tracker = createTracker(cv);
-  $('cvStatus').textContent = `OpenCV ${cv.getBuildInformation ? cv.getBuildInformation().match(/Version control:\s*(\S+)/)?.[1] || '4.x' : '4.x'} ready`;
-  $('cvStatus').classList.add('ok');
+  setStatus('cvStatus', 'OpenCV ready', 'ok');
   const btn = $('startBtn');
   btn.disabled = false;
   btn.textContent = 'Start camera & sound';
   btn.onclick = start;
   loadFingerModel(cv)
-    .then((m) => { model = m; $('modelStatus').textContent = 'CNN model ready'; $('modelStatus').classList.add('ok'); })
+    .then((m) => { model = m; setStatus('modelStatus', 'Model ready', 'ok'); })
     .catch((err) => {
       console.error(err);
       mode = 'classic'; $('mode').value = 'classic';
-      $('modelStatus').textContent = 'CNN unavailable – using classical';
+      setStatus('modelStatus', 'Model offline · classical mode', 'warn');
     });
 });

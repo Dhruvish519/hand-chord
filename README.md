@@ -6,11 +6,11 @@ Play chords with your hand in the browser. OpenCV.js finds the hand, a **MobileN
 
 | Gesture | Sound |
 |---|---|
-| Fist (0) | Em (iii) |
+| Fist (0) | Em |
 | 1 / 2 / 3 / 4 fingers | C, G, Am, F — the I–V–vi–IV progression |
-| 5 fingers | Dm (ii) |
+| 5 fingers | Dm |
 | Hand out of the box, or not a counting gesture | silence |
-| *(all of the above can be changed in the panel)* | |
+| *(tap a card to set any chord, e.g. Dmaj7 or Cadd9, or load a preset progression)* | |
 | Hand height | volume |
 | Hand left ↔ right | filter brightness |
 | Hand tilt | vibrato |
@@ -73,9 +73,19 @@ Charts: `python/train/results/rotation_accuracy.png` and `confusion_matrix.png` 
 4. **Tilt** comes from the CNN's (sin, cos) output, smoothed over frames. Vibrato starts at 8° and is full at 35° either way. (In classical mode, tilt comes from image moments.)
 
 ### Customising the sounds
-Open **Customise sounds for each finger** in the panel. Each count, including the fist (0), can play any chord of the current key, any single note from C3 to B5, or silence. The choice is saved in the browser. Default: fist = iii, 1–4 fingers = I–V–vi–IV, 5 = ii.
+Tap any card under **Your sounds** (fist, 1–5 fingers) to open the editor:
+- **Root:** C, C#, D, Eb, E, F, F#, G, Ab, A, Bb, B
+- **Type:** Major, Minor, 7, maj7, m7, sus2, sus4, add9, 6, m6, 9, m9, dim, aug, 5 (power chord), or a single note (octave 3–5), or silent
 
-The original classical method (convexity defects) is still selectable in the panel, which makes a good live comparison.
+So you can set things like D, Dmaj7, Cadd9, F#m7 or Bbsus4. Every change plays a short preview. **Quick fill** loads a whole progression in any key: Pop (I–V–vi–IV), Emotional (vi–IV–I–V), 50s (I–vi–IV–V), Jazz (ii7–V7–Imaj7), Lo-fi (maj7 & m9) or Blues (I7–IV7–V7). Choices are saved in the browser. Default: fist = Em, 1–4 = C G Am F, 5 = Dm.
+
+### Fist detection
+On the test photos the fist is the easiest class (99.7% recall). Live, the skin outline usually includes the wrist and forearm, which made a fist look tiny in the crop. So the app now:
+1. crops the **top part of the outline** (about one hand-width tall) first, where the hand actually is, before trying the full outline and the whole zone;
+2. accepts a fist at 40% confidence (other counts need 55%);
+3. adds a classical safety net: if the CNN is torn between "fist" and "none" and the outline is compact (solidity ≥ 0.86, i.e. no finger gaps), it's a fist.
+
+In a browser test with forearms in view, real HaGRID fists were recognised at 96–97% and 9 of 10 other hands were counted correctly, while a face stayed silent.
 
 ### Re-train it yourself
 ```bash

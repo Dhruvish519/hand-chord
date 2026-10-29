@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HandChord — OpenCV Gesture Synth</title>
-  <meta name="description" content="Play chords with your hand. Classical computer vision (OpenCV.js) — skin segmentation, contours and convexity defects — drives a browser synthesizer." />
+  <meta name="description" content="Play chords with your hand. OpenCV.js finds your hand and a CNN trained on 44,000 hand photos counts your fingers, driving a browser synthesizer." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -16,96 +16,121 @@
       <span class="logo" aria-hidden="true">✋</span>
       <div>
         <h1>HandChord</h1>
-        <p>Gesture synthesizer · OpenCV.js + a CNN trained on 44k hand images</p>
+        <p>Play chords with your hand · OpenCV.js + a CNN trained on 44k hand photos</p>
       </div>
     </div>
     <div class="status">
-      <span id="cvStatus" class="pill">OpenCV: loading…</span>
-      <span id="modelStatus" class="pill">CNN: loading…</span>
+      <span id="cvStatus" class="pill"><i class="dot"></i>OpenCV</span>
+      <span id="modelStatus" class="pill"><i class="dot"></i>Model</span>
       <span id="fps" class="pill mono">— fps</span>
-      <span id="procMs" class="pill mono">— ms</span>
     </div>
   </header>
 
   <main class="layout">
     <section class="stage-card">
-      <div class="stage-tabs" role="tablist" aria-label="Pipeline stage">
-        <button class="tab active" data-stage="camera">1 · Camera</button>
-        <button class="tab" data-stage="raw">2 · Skin mask</button>
-        <button class="tab" data-stage="clean">3 · Cleaned mask</button>
-        <button class="tab" data-stage="shape">4 · Contour + hull</button>
-      </div>
       <div class="stage">
         <canvas id="view" width="640" height="480"></canvas>
         <div id="overlay" class="overlay">
           <h2>Play chords with your hand</h2>
-          <p>Hold one hand inside the box. Show 0–5 fingers (a fist counts as 0) to pick a sound, or take your hand out of the box to stop.
-             Move up for volume, sideways for brightness, tilt for vibrato.</p>
+          <ol class="howto">
+            <li><span class="ic">✋</span><b>Hand in the box</b><em>Hold one hand inside the outlined zone</em></li>
+            <li><span class="ic">✌️</span><b>Show 0–5 fingers</b><em>Each count plays its own chord. A fist is 0</em></li>
+            <li><span class="ic">↕</span><b>Move and tilt</b><em>Higher is louder, sideways is brighter, tilt adds vibrato</em></li>
+          </ol>
           <button id="startBtn" class="btn primary" disabled>Loading OpenCV…</button>
-          <p class="fine">Video never leaves your browser. Works best with a plain background and even light.</p>
+          <p class="fine">Your camera stays on your device. Best with even light and a plain background.</p>
         </div>
         <div id="countdown" class="countdown" hidden></div>
       </div>
-      <canvas id="scope" class="scope" width="1280" height="120" aria-label="Audio waveform"></canvas>
+      <div class="stage-foot">
+        <div class="stage-tabs" role="tablist" aria-label="Pipeline view">
+          <span class="label">View</span>
+          <button class="tab active" data-stage="camera" title="Camera with hand outline and CNN crop">Camera</button>
+          <button class="tab" data-stage="raw" title="Pixels that pass the YCrCb skin test">Skin mask</button>
+          <button class="tab" data-stage="clean" title="After blur, opening and closing">Cleaned</button>
+          <button class="tab" data-stage="shape" title="Largest contour, convex hull and defects">Contour</button>
+        </div>
+        <canvas id="scope" class="scope" width="1280" height="120" aria-label="Audio waveform"></canvas>
+      </div>
     </section>
 
     <aside class="panel">
-      <div class="readout">
-        <div class="fingers">
-          <span id="fingerCount" class="big mono">–</span>
-          <span class="label">fingers</span>
+      <section class="card now">
+        <div class="now-top">
+          <div class="now-chord">
+            <span class="label">Now playing</span>
+            <span id="chordName" class="chord-name">—</span>
+            <span id="chordRoman" class="sub">show your hand</span>
+          </div>
+          <div class="now-count">
+            <span id="fingerCount" class="big mono">–</span>
+            <span class="label">fingers</span>
+          </div>
         </div>
-        <div class="chord">
-          <span id="chordName" class="chord-name">—</span>
-          <span id="chordRoman" class="label">no hand</span>
+        <div class="modelout">
+          <div class="modelout-head"><span class="label">What the model sees</span><span id="confidence" class="mono small">—</span></div>
+          <div id="probs" class="probs">
+            <div><i></i><b>0</b></div><div><i></i><b>1</b></div><div><i></i><b>2</b></div><div><i></i><b>3</b></div>
+            <div><i></i><b>4</b></div><div><i></i><b>5</b></div><div class="none"><i></i><b>none</b></div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div class="modelout">
-        <div class="modelout-head"><span class="label">CNN output</span><span id="confidence" class="mono small">—</span></div>
-        <div id="probs" class="probs">
-          <div><i></i><b>0</b></div><div><i></i><b>1</b></div><div><i></i><b>2</b></div><div><i></i><b>3</b></div>
-          <div><i></i><b>4</b></div><div><i></i><b>5</b></div><div class="none"><i></i><b>none</b></div>
+      <section class="card">
+        <div class="card-head"><h3>Your sounds</h3><span class="hint">Tap a card to change it</span></div>
+        <div id="soundCards" class="sound-cards"></div>
+        <div id="editor" class="editor" hidden>
+          <div class="editor-head">
+            <b id="editorTitle">Fist</b>
+            <span id="editorName" class="editor-name">Em</span>
+            <button id="previewBtn" class="btn small" type="button">▶ Preview</button>
+            <button id="editorClose" class="icon-btn" type="button" aria-label="Close editor">✕</button>
+          </div>
+          <div class="field"><span class="label">Root</span><div id="rootPills" class="pills roots"></div></div>
+          <div class="field"><span class="label">Type</span><div id="typePills" class="pills types"></div></div>
+          <div class="field" id="octaveField" hidden><span class="label">Octave</span><div id="octPills" class="pills"></div></div>
         </div>
-      </div>
+        <div class="quickfill">
+          <span class="label">Quick fill</span>
+          <div class="qf-row">
+            <label class="qf-key"><span>Key</span><select id="qfKey" aria-label="Key"></select></label>
+            <select id="qfProg" aria-label="Progression"></select>
+            <button id="qfApply" class="btn small" type="button">Apply</button>
+          </div>
+        </div>
+      </section>
 
-      <div class="meters">
-        <div class="meter"><span class="label">Volume · height</span><div class="bar"><i id="mVol"></i></div></div>
-        <div class="meter"><span class="label">Brightness · x</span><div class="bar"><i id="mBright"></i></div></div>
-        <div class="meter"><span class="label">Vibrato · tilt</span><div class="bar"><i id="mTilt"></i></div><span id="tiltDeg" class="mono small">0°</span></div>
-      </div>
+      <section class="card">
+        <div class="card-head"><h3>Expression</h3><span class="hint">from hand position</span></div>
+        <div class="meters">
+          <div class="meter"><span class="label">Volume · height</span><div class="bar"><i id="mVol"></i></div></div>
+          <div class="meter"><span class="label">Brightness · left ↔ right</span><div class="bar"><i id="mBright"></i></div></div>
+          <div class="meter"><span class="label">Vibrato · tilt</span><div class="bar"><i id="mTilt"></i></div><span id="tiltDeg" class="mono small">0°</span></div>
+        </div>
+      </section>
 
-      <div class="chordmap">
-        <span class="label">Finger → sound</span>
-        <ol id="chordMap"></ol>
-        <details class="assign">
-          <summary>Customise sounds for each finger</summary>
-          <div id="assignEditor" class="assign-grid"></div>
-          <button id="assignReset" class="btn ghost small-btn">Reset to default progression</button>
-          <p class="fine">Pick a chord from the current key, a single note, or silence. Saved in this browser.</p>
-        </details>
-      </div>
+      <section class="card">
+        <div class="card-head"><h3>Sound</h3></div>
+        <div id="presetSeg" class="seg"></div>
+        <div class="row-field">
+          <span class="label">Hand zone</span>
+          <div id="sideSeg" class="seg small">
+            <button type="button" data-v="left">Left</button>
+            <button type="button" data-v="right" class="on">Right</button>
+          </div>
+        </div>
+      </section>
 
-      <div class="controls">
-        <label>Sound
-          <select id="preset"></select>
-        </label>
-        <label>Key
-          <select id="key"></select>
-        </label>
-        <label>Box side
-          <select id="side"><option value="right">Right</option><option value="left">Left</option></select>
-        </label>
-        <label class="wide">Finger counting
+      <details class="card advanced">
+        <summary>Advanced settings <span class="hint">for testing and the demo</span></summary>
+        <label class="field-label">Finger counting
           <select id="mode">
-            <option value="cnn">Trained CNN (MobileNetV3, works at any hand angle)</option>
+            <option value="cnn">Trained CNN (works at any hand angle)</option>
             <option value="classic">Classical OpenCV (convexity defects)</option>
           </select>
         </label>
-      </div>
-
-      <details class="tuning" open>
-        <summary>Skin detection (YCrCb)</summary>
+        <div class="adv-row"><span class="label">Processing time</span><span id="procMs" class="mono small">—</span></div>
+        <h4>Skin detection (YCrCb)</h4>
         <button id="calibBtn" class="btn" disabled>Auto-calibrate to my skin</button>
         <div class="sliders">
           <label>Cr min <input type="range" id="crMin" min="0" max="255" /><output></output></label>
@@ -114,7 +139,7 @@
           <label>Cb max <input type="range" id="cbMax" min="0" max="255" /><output></output></label>
           <label>Defect depth <input type="range" id="defectDepthRatio" min="0.05" max="0.4" step="0.01" /><output></output></label>
         </div>
-        <button id="resetBtn" class="btn ghost">Reset to defaults</button>
+        <button id="resetBtn" class="btn ghost">Reset skin settings</button>
       </details>
     </aside>
   </main>
@@ -131,7 +156,7 @@
       <li><b>Tilt from the CNN</b><span>The same network also outputs the hand’s rotation (as sin and cos), learned by rotating training images by known angles. Tilt drives vibrato.</span></li>
       <li><b>Smoothing</b><span>Probabilities are averaged over frames and must pass 55% confidence plus a 7-frame vote before the sound changes.</span></li>
     </ol>
-    <p class="note">The classical method (convexity defects: deep, narrow valleys in the convex hull are gaps between fingers) is still available in the panel for comparison.</p>
+    <p class="note">The classical method (convexity defects: deep, narrow valleys in the convex hull are gaps between fingers) is still available under Advanced settings for comparison. A fist has no gaps, so for 0 the app also checks that the hand outline is compact (solidity) as a safety net.</p>
 
     <h2 class="sp">The model</h2>
     <div class="modelinfo">

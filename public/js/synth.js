@@ -2,31 +2,75 @@
 // app.js tells it how many fingers are up and passes hand position/tilt as 0..1 values.
 /* global Tone */
 
-const MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11];
-export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const ROMAN = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°'];
+export const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 
-// What each finger count plays. Every entry is one of:
-//   { type: 'chord', degree: 0-6 }        a chord built on that step of the chosen key
-//   { type: 'note', pc: 0-11, octave }    one single note (pc 0 = C)
-//   { type: 'silence' }
-// Default: fist = iii, then 1-2-3-4 fingers = the I–V–vi–IV progression, 5 = ii.
-export const DEFAULT_ASSIGNMENTS = {
-  0: { type: 'chord', degree: 2 },
-  1: { type: 'chord', degree: 0 },
-  2: { type: 'chord', degree: 4 },
-  3: { type: 'chord', degree: 5 },
-  4: { type: 'chord', degree: 3 },
-  5: { type: 'chord', degree: 1 },
+// Chord types: name suffix, friendly label, and intervals in semitones from the root.
+export const QUALITIES = {
+  maj:  { suffix: '',     label: 'Major',      iv: [0, 4, 7] },
+  min:  { suffix: 'm',    label: 'Minor',      iv: [0, 3, 7] },
+  '7':  { suffix: '7',    label: '7',          iv: [0, 4, 7, 10] },
+  maj7: { suffix: 'maj7', label: 'maj7',       iv: [0, 4, 7, 11] },
+  m7:   { suffix: 'm7',   label: 'm7',         iv: [0, 3, 7, 10] },
+  sus2: { suffix: 'sus2', label: 'sus2',       iv: [0, 2, 7] },
+  sus4: { suffix: 'sus4', label: 'sus4',       iv: [0, 5, 7] },
+  add9: { suffix: 'add9', label: 'add9',       iv: [0, 4, 7, 14] },
+  '6':  { suffix: '6',    label: '6',          iv: [0, 4, 7, 9] },
+  m6:   { suffix: 'm6',   label: 'm6',         iv: [0, 3, 7, 9] },
+  '9':  { suffix: '9',    label: '9',          iv: [0, 4, 7, 10, 14] },
+  m9:   { suffix: 'm9',   label: 'm9',         iv: [0, 3, 7, 10, 14] },
+  dim:  { suffix: 'dim',  label: 'dim',        iv: [0, 3, 6] },
+  aug:  { suffix: 'aug',  label: 'aug',        iv: [0, 4, 8] },
+  '5':  { suffix: '5',    label: '5 (power)',  iv: [0, 7, 12] },
 };
 
-/** UI text for an assignment in a given key (root 0 = C): { name, sub } */
-export function describeAssignment(a, root = 0) {
+// Display order for the editor (JS would otherwise list number-like keys such as '7' first).
+export const QUALITY_ORDER = ['maj', 'min', '7', 'maj7', 'm7', 'sus2', 'sus4', 'add9', '6', 'm6', '9', 'm9', 'dim', 'aug', '5'];
+
+// What each finger count plays. Every entry is one of:
+//   { type: 'chord', root: 0-11, quality: key of QUALITIES }   e.g. D maj7 = { root: 2, quality: 'maj7' }
+//   { type: 'note', pc: 0-11, octave }                          one single note (pc 0 = C)
+//   { type: 'silence' }
+// Default: fist = Em, then 1-2-3-4 fingers = C G Am F (the pop I–V–vi–IV progression), 5 = Dm.
+export const DEFAULT_ASSIGNMENTS = {
+  0: { type: 'chord', root: 4, quality: 'min' },
+  1: { type: 'chord', root: 0, quality: 'maj' },
+  2: { type: 'chord', root: 7, quality: 'maj' },
+  3: { type: 'chord', root: 9, quality: 'min' },
+  4: { type: 'chord', root: 5, quality: 'maj' },
+  5: { type: 'chord', root: 2, quality: 'min' },
+};
+
+// Ready-made progressions for "quick fill": [semitones above the key, chord type] for fist, 1, 2, 3, 4, 5.
+export const PROGRESSIONS = {
+  pop:   { label: 'Pop (I–V–vi–IV)',       chords: [[4, 'min'], [0, 'maj'], [7, 'maj'], [9, 'min'], [5, 'maj'], [2, 'min']] },
+  sad:   { label: 'Emotional (vi–IV–I–V)', chords: [[4, 'm7'], [9, 'min'], [5, 'maj'], [0, 'maj'], [7, 'maj'], [2, 'm7']] },
+  fifties: { label: '50s (I–vi–IV–V)',     chords: [[2, 'min'], [0, 'maj'], [9, 'min'], [5, 'maj'], [7, 'maj'], [0, 'add9']] },
+  jazz:  { label: 'Jazz (ii7–V7–Imaj7)',   chords: [[9, 'm7'], [2, 'm7'], [7, '7'], [0, 'maj7'], [5, 'maj7'], [4, 'm7']] },
+  lofi:  { label: 'Lo-fi (maj7 & m9)',     chords: [[4, 'm7'], [0, 'maj7'], [9, 'm9'], [5, 'maj7'], [2, 'm9'], [7, 'sus4']] },
+  blues: { label: 'Blues (I7–IV7–V7)',     chords: [[0, '5'], [0, '7'], [5, '7'], [7, '7'], [9, 'm7'], [0, '9']] },
+};
+
+export function progressionAssignments(key, name) {
+  const out = {};
+  PROGRESSIONS[name].chords.forEach(([st, q], f) => { out[f] = { type: 'chord', root: (key + st) % 12, quality: q }; });
+  return out;
+}
+
+/** UI text for an assignment: { name: 'Dmaj7', sub: 'D · maj7' } */
+export function describeAssignment(a) {
   if (!a || a.type === 'silence') return { name: '—', sub: 'silence' };
-  if (a.type === 'note') return { name: `${NOTE_NAMES[a.pc]}${a.octave}`, sub: 'note' };
-  const rootName = NOTE_NAMES[(root + MAJOR_SCALE[a.degree]) % 12];
-  const quality = [1, 2, 5].includes(a.degree) ? 'm' : a.degree === 6 ? 'dim' : '';
-  return { name: rootName + quality, sub: `chord ${ROMAN[a.degree]}` };
+  if (a.type === 'note') return { name: `${NOTE_NAMES[a.pc]}${a.octave}`, sub: 'single note' };
+  const q = QUALITIES[a.quality] || QUALITIES.maj;
+  return { name: NOTE_NAMES[a.root] + q.suffix, sub: `${NOTE_NAMES[a.root]} ${q.label.toLowerCase()}` };
+}
+
+/** MIDI notes for an assignment (empty = silence). Bass note + chord voiced around middle C. */
+export function notesFor(a) {
+  if (!a || a.type === 'silence') return [];
+  if (a.type === 'note') return [12 * (a.octave + 1) + a.pc]; // C4 = MIDI 60
+  const q = QUALITIES[a.quality] || QUALITIES.maj;
+  const base = 60 + a.root - (a.root > 6 ? 12 : 0);          // keep chords between F#3 and F#4
+  return [base - 12, ...q.iv.map((i) => base + i)];
 }
 
 export const PRESETS = {
@@ -49,7 +93,6 @@ export const PRESETS = {
 
 export class ChordSynth {
   constructor() {
-    this.root = 0;          // key: 0 = C major
     this.current = null;    // currently held MIDI notes
     this.assign = structuredClone(DEFAULT_ASSIGNMENTS);
     this.analyser = new Tone.Analyser('waveform', 1024);
@@ -71,39 +114,21 @@ export class ChordSynth {
     this.current = null;
   }
 
-  setKey(rootIndex) { this.root = rootIndex; this.current = null; this.synth.releaseAll(); }
-
   setAssignments(map) { this.assign = structuredClone(map); this.current = null; this.synth.releaseAll(); }
 
-  /** Triad on a scale degree, plus a bass note one octave below the chord root. */
-  chordNotes(degree) {
-    const base = 60 + this.root; // middle C + key offset
-    const note = (d) => base + MAJOR_SCALE[d % 7] + 12 * Math.floor(d / 7);
-    const triad = [note(degree), note(degree + 2), note(degree + 4)];
-    return [triad[0] - 12, ...triad];
+  labelFor(fingers) { return describeAssignment(this.assign[fingers]); }
+
+  /** Play an assignment for a moment (editor preview). */
+  preview(a) {
+    const notes = notesFor(a);
+    if (!notes.length) return;
+    this.stop();
+    this.synth.triggerAttackRelease(notes.map((n) => Tone.Frequency(n, 'midi').toFrequency()), 0.9);
   }
-
-  chordName(degree) {
-    const rootName = NOTE_NAMES[(this.root + MAJOR_SCALE[degree]) % 12];
-    const quality = [1, 2, 5].includes(degree) ? 'm' : degree === 6 ? 'dim' : '';
-    return { name: rootName + quality, roman: ROMAN[degree] };
-  }
-
-  /** MIDI notes for an assignment (empty = silence). */
-  notesFor(a) {
-    if (!a || a.type === 'silence') return [];
-    if (a.type === 'note') return [12 * (a.octave + 1) + a.pc]; // C4 = MIDI 60
-    return this.chordNotes(a.degree);
-  }
-
-  /** Short text for the UI: { name, sub } */
-  label(a) { return describeAssignment(a, this.root); }
-
-  labelFor(fingers) { return this.label(this.assign[fingers]); }
 
   /** Play whatever is assigned to this finger count. */
   play(fingers) {
-    const notes = this.notesFor(this.assign[fingers]);
+    const notes = notesFor(this.assign[fingers]);
     if (!notes.length) { this.stop(); return; }
     if (this.current && this.current.join() === notes.join()) return;
     const now = Tone.now();
