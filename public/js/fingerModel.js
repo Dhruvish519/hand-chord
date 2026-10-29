@@ -10,9 +10,17 @@ export const NONE = 6;
 const SIZE = 112;
 
 export async function loadFingerModel(cv, url = 'model/handchord.onnx') {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`model download failed (${res.status})`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
+  // Retry a few times: a 6 MB download can be cut off by a network blip.
+  let bytes = null, lastErr = null;
+  for (let attempt = 0; attempt < 4 && !bytes; attempt++) {
+    try {
+      if (attempt) await new Promise((r) => setTimeout(r, 1500 * attempt));
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`model download failed (${res.status})`);
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } catch (err) { lastErr = err; }
+  }
+  if (!bytes) throw lastErr;
   // OpenCV.js reads files from its in-memory file system, so write the model there first.
   const path = 'handchord.onnx';
   try { cv.FS_unlink(path); } catch (e) { /* not there yet */ }
