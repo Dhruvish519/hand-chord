@@ -1,0 +1,16 @@
+{
+  "name": "handchord",
+  "version": "1.0.0",
+  "description": "OpenCV.js gesture synthesizer",
+  "scripts": {
+    "test": "node test/synthetic.test.mjs",
+    "start": "python3 -m http.server 8000 -d public"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@techstark/opencv-js": "^4.10.0-release.1",
+    "tone": "^15.1.22"
+  }
+}

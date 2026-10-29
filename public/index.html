@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HandChord — OpenCV Gesture Synth</title>
+  <meta name="description" content="Play chords with your hand. Classical computer vision (OpenCV.js) — skin segmentation, contours and convexity defects — drives a browser synthesizer." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">✋</span>
+      <div>
+        <h1>HandChord</h1>
+        <p>Gesture synthesizer · classical computer vision with OpenCV.js</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="cvStatus" class="pill">OpenCV: loading…</span>
+      <span id="fps" class="pill mono">— fps</span>
+      <span id="procMs" class="pill mono">— ms</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage-card">
+      <div class="stage-tabs" role="tablist" aria-label="Pipeline stage">
+        <button class="tab active" data-stage="camera">1 · Camera</button>
+        <button class="tab" data-stage="raw">2 · Skin mask</button>
+        <button class="tab" data-stage="clean">3 · Cleaned mask</button>
+        <button class="tab" data-stage="shape">4 · Contour + hull</button>
+      </div>
+      <div class="stage">
+        <canvas id="view" width="640" height="480"></canvas>
+        <div id="overlay" class="overlay">
+          <h2>Play chords with your hand</h2>
+          <p>Hold one hand inside the box. Show 1–5 fingers to pick a chord, make a fist to stop.
+             Move up for volume, sideways for brightness, tilt for vibrato.</p>
+          <button id="startBtn" class="btn primary" disabled>Loading OpenCV…</button>
+          <p class="fine">Video never leaves your browser. Works best with a plain background and even light.</p>
+        </div>
+        <div id="countdown" class="countdown" hidden></div>
+      </div>
+      <canvas id="scope" class="scope" width="1280" height="120" aria-label="Audio waveform"></canvas>
+    </section>
+
+    <aside class="panel">
+      <div class="readout">
+        <div class="fingers">
+          <span id="fingerCount" class="big mono">–</span>
+          <span class="label">fingers</span>
+        </div>
+        <div class="chord">
+          <span id="chordName" class="chord-name">—</span>
+          <span id="chordRoman" class="label">no hand</span>
+        </div>
+      </div>
+
+      <div class="meters">
+        <div class="meter"><span class="label">Volume · height</span><div class="bar"><i id="mVol"></i></div></div>
+        <div class="meter"><span class="label">Brightness · x</span><div class="bar"><i id="mBright"></i></div></div>
+        <div class="meter"><span class="label">Vibrato · tilt</span><div class="bar"><i id="mTilt"></i></div><span id="tiltDeg" class="mono small">0°</span></div>
+      </div>
+
+      <div class="chordmap">
+        <span class="label">Finger → chord</span>
+        <ol id="chordMap"></ol>
+      </div>
+
+      <div class="controls">
+        <label>Sound
+          <select id="preset"></select>
+        </label>
+        <label>Key
+          <select id="key"></select>
+        </label>
+        <label>Box side
+          <select id="side"><option value="right">Right</option><option value="left">Left</option></select>
+        </label>
+      </div>
+
+      <details class="tuning" open>
+        <summary>Skin detection (YCrCb)</summary>
+        <button id="calibBtn" class="btn" disabled>Auto-calibrate to my skin</button>
+        <div class="sliders">
+          <label>Cr min <input type="range" id="crMin" min="0" max="255" /><output></output></label>
+          <label>Cr max <input type="range" id="crMax" min="0" max="255" /><output></output></label>
+          <label>Cb min <input type="range" id="cbMin" min="0" max="255" /><output></output></label>
+          <label>Cb max <input type="range" id="cbMax" min="0" max="255" /><output></output></label>
+          <label>Defect depth <input type="range" id="defectDepthRatio" min="0.05" max="0.4" step="0.01" /><output></output></label>
+        </div>
+        <button id="resetBtn" class="btn ghost">Reset to defaults</button>
+      </details>
+    </aside>
+  </main>
+
+  <section class="how">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li><b>YCrCb conversion</b><span>Brightness (Y) is separated from colour (Cr, Cb), so lighting matters less.</span></li>
+      <li><b>Skin threshold</b><span><code>cv.inRange</code> keeps pixels whose Cr and Cb fall in the skin range.</span></li>
+      <li><b>Morphology</b><span>Median blur, then opening removes specks and closing fills holes.</span></li>
+      <li><b>Largest contour</b><span><code>cv.findContours</code>; the biggest blob in the box is the hand.</span></li>
+      <li><b>Moments</b><span>Centroid gives position; central moments give the tilt angle.</span></li>
+      <li><b>Convexity defects</b><span>Deep, narrow valleys in the convex hull are gaps between fingers. Gaps + 1 = fingers.</span></li>
+    </ol>
+    <p class="credit">Inspired by <a href="https://gesture-synth-weld.vercel.app" target="_blank" rel="noopener">Gesture Synth</a> by Eric Wei. Built with <a href="https://docs.opencv.org/4.x/d5/d10/tutorial_js_root.html" target="_blank" rel="noopener">OpenCV.js</a> and <a href="https://tonejs.github.io" target="_blank" rel="noopener">Tone.js</a>.</p>
+  </section>
+
+  <video id="video" playsinline muted hidden></video>
+  <canvas id="proc" width="320" height="240" hidden></canvas>
+  <canvas id="maskCanvas" hidden></canvas>
+
+  <script src="lib/Tone.js"></script>
+  <script src="lib/opencv.js" async></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
